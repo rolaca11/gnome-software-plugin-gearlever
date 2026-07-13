@@ -1,0 +1,14 @@
+option(
+  'plugin_api',
+  type: 'string',
+  value: '23',
+  description: 'GNOME Software plugin ABI (23 for GNOME Software 49/50)',
+)
+
+option(
+  'gnome_software_libdir',
+  type: 'string',
+  value: '',
+  description: 'Directory containing libgnomesoftware.so (auto-detected below prefix/libdir by default)',
+)
+
