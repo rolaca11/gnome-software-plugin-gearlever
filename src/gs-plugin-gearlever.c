@@ -1,6 +1,7 @@
 #include "gs-api-23.h"
 #include "gearlever-utils.h"
 
+#include <errno.h>
 #include <glib/gstdio.h>
 #include <gmodule.h>
 
@@ -19,6 +20,8 @@ G_DEFINE_TYPE (GsPluginGearlever, gs_plugin_gearlever, GS_TYPE_PLUGIN)
 
 typedef struct {
 	GsAppList *apps;
+	GsAppList *job_apps;
+	GHashTable *completed_apps;
 	GsPluginUpdateAppsFlags flags;
 	GsPluginEventCallback event_callback;
 	gpointer event_user_data;
@@ -34,6 +37,8 @@ static void
 update_task_data_free (UpdateTaskData *data)
 {
 	g_clear_object (&data->apps);
+	g_clear_object (&data->job_apps);
+	g_clear_pointer (&data->completed_apps, g_hash_table_unref);
 	g_clear_object (&data->failed_app);
 	g_free (data);
 }
@@ -289,6 +294,31 @@ gs_plugin_gearlever_list_apps_finish (GsPlugin *plugin,
 	return g_task_propagate_pointer (G_TASK (result), error);
 }
 
+static gboolean
+update_completed (gchar *output, const gchar *path, const GStatBuf *before)
+{
+	g_autofree gchar *confirmation = g_strdup_printf ("%s updated successfully", path);
+	const gchar *last_line;
+	GStatBuf after;
+
+	if (output == NULL)
+		return FALSE;
+	g_strchomp (output);
+	last_line = strrchr (output, '\n');
+	if (g_strcmp0 (last_line != NULL ? last_line + 1 : output, confirmation) != 0)
+		return FALSE;
+	if (g_stat (path, &after) != 0)
+		return errno == ENOENT;
+
+	return before->st_dev != after.st_dev ||
+	       before->st_ino != after.st_ino ||
+	       before->st_size != after.st_size ||
+	       before->st_mtim.tv_sec != after.st_mtim.tv_sec ||
+	       before->st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+	       before->st_ctim.tv_sec != after.st_ctim.tv_sec ||
+	       before->st_ctim.tv_nsec != after.st_ctim.tv_nsec;
+}
+
 static void
 update_apps_thread (GTask *task,
 		    gpointer source_object,
@@ -329,12 +359,21 @@ update_apps_thread (GTask *task,
 		const gchar *args[4];
 		g_autofree gchar *output = NULL;
 		g_autoptr(GError) local_error = NULL;
+		GStatBuf before;
+		gboolean skipped;
+		gboolean succeeded;
 
 		if (!gs_app_has_management_plugin (app, plugin))
 			continue;
-		path = gs_app_get_metadata_item (app, GEARLEVER_PATH_KEY);
-		if (path == NULL)
+		if (gs_app_get_state (app) == GS_APP_STATE_INSTALLED)
 			continue;
+		path = gs_app_get_metadata_item (app, GEARLEVER_PATH_KEY);
+		if (path == NULL || g_stat (path, &before) != 0) {
+			g_set_object (&data->failed_app, app);
+			g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
+						 "Could not locate the AppImage for %s", gs_app_get_id (app));
+			return;
+		}
 
 		args[0] = "--update";
 		args[1] = path;
@@ -343,26 +382,31 @@ update_apps_thread (GTask *task,
 		gs_app_set_state (app, GS_APP_STATE_INSTALLING);
 		gs_app_set_progress (app, GS_APP_PROGRESS_UNKNOWN);
 
-		if (!gearlever_run (command, args, cancellable, &output, &local_error) ||
-		    (output != NULL && strstr (output, "was skipped because") != NULL)) {
+		succeeded = gearlever_run (command, args, cancellable, &output, &local_error);
+		skipped = output != NULL && strstr (output, "was skipped because") != NULL;
+		if (!succeeded || skipped || !update_completed (output, path, &before)) {
 			g_set_object (&data->failed_app, app);
 			gs_app_set_state (app, GS_APP_STATE_UPDATABLE_LIVE);
 			gs_app_set_progress (app, 0);
 			if (local_error != NULL) {
 				g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 						 "Could not update %s: %s", gs_app_get_id (app), local_error->message);
-			} else {
+			} else if (skipped) {
 				g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
 						 "%s is currently running; close it and try again", gs_app_get_id (app));
+			} else {
+				g_task_return_new_error (task, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_FAILED,
+						 "%s was not updated: Gearlever did not confirm an AppImage replacement",
+						 gs_app_get_id (app));
 			}
 			return;
 		}
 
 		gs_app_set_progress (app, 100);
 		gs_app_set_state (app, GS_APP_STATE_INSTALLED);
+		g_hash_table_add (data->completed_apps, app);
 	}
 
-	gs_plugin_updates_changed (plugin);
 	g_task_return_boolean (task, TRUE);
 }
 
@@ -373,6 +417,18 @@ update_apps_worker_done (GObject *source_object, GAsyncResult *result, gpointer 
 	GsPlugin *plugin = GS_PLUGIN (source_object);
 	UpdateTaskData *data = g_task_get_task_data (outer_task);
 	g_autoptr(GError) local_error = NULL;
+
+	if ((data->flags & (GS_PLUGIN_UPDATE_APPS_FLAGS_NO_APPLY |
+			    GS_PLUGIN_UPDATE_APPS_FLAGS_INTERACTIVE)) == 0) {
+		for (guint i = 0; i < gs_app_list_length (data->apps); i++) {
+			GsApp *app = gs_app_list_index (data->apps, i);
+			if (gs_app_has_management_plugin (app, plugin) &&
+			    !g_hash_table_contains (data->completed_apps, app))
+				gs_app_list_remove (data->job_apps, app);
+		}
+	}
+	if (g_hash_table_size (data->completed_apps) > 0)
+		gs_plugin_updates_changed (plugin);
 
 	if (!g_task_propagate_boolean (G_TASK (result), &local_error)) {
 		if (data->event_callback != NULL) {
@@ -414,7 +470,9 @@ gs_plugin_gearlever_update_apps_async (GsPlugin *plugin,
 	(void) app_needs_user_action_callback;
 	(void) app_needs_user_action_data;
 
-	data->apps = g_object_ref (apps);
+	data->apps = gs_app_list_copy (apps);
+	data->job_apps = g_object_ref (apps);
+	data->completed_apps = g_hash_table_new (g_direct_hash, g_direct_equal);
 	data->flags = flags;
 	data->event_callback = event_callback;
 	data->event_user_data = event_user_data;

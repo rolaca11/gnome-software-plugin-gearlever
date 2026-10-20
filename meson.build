@@ -60,4 +60,12 @@ test_plugin_load = executable(
   include_directories: inc,
   dependencies: [glib, gobject, gio, gmodule, gnome_software],
 )
-test('plugin-load', test_plugin_load, args: [plugin.full_path()])
+test('plugin-load', test_plugin_load, args: [plugin.full_path()], depends: plugin)
+
+test_plugin_updates = executable(
+  'test-plugin-updates',
+  'tests/test-plugin-updates.c',
+  include_directories: inc,
+  dependencies: [glib, gobject, gio, gmodule, gnome_software],
+)
+test('plugin-updates', test_plugin_updates, args: [plugin.full_path()], depends: plugin)

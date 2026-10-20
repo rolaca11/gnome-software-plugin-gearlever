@@ -51,6 +51,7 @@ meson setup build --prefix=/usr \
 - Installed AppImages are loaded asynchronously through `gearlever --list-installed --json` and enriched from their Gearlever-generated desktop entries.
 - If Gearlever does not support JSON output yet, the plugin automatically falls back to its legacy table parser.
 - Updates run through `gearlever --update PATH --yes`; Gearlever remains responsible for update-source support and file replacement.
+- Automatic updates remain enabled. Completion requires Gearlever to finish successfully and replace the AppImage. Skipped, failed, and incomplete background updates are excluded from completion notifications.
 - Running AppImages are not force-updated. Close the application and retry when GNOME Software reports that it is running.
 - Gearlever currently combines download and installation. GNOME Software’s background download-only phase is therefore acknowledged without downloading; the actual download happens when the update is applied.
 - AppImage integration and removal remain in Gearlever.

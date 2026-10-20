@@ -51,6 +51,10 @@ typedef enum {
 	GS_SIZE_TYPE_VALID,
 } GsSizeType;
 
+typedef enum {
+	GS_APP_QUIRK_DO_NOT_AUTO_UPDATE = 1 << 17,
+} GsAppQuirk;
+
 /* AppStream 1.x enum values used by this plugin. */
 typedef enum {
 	AS_COMPONENT_KIND_UNKNOWN,
@@ -220,7 +224,9 @@ guint gs_app_query_get_n_properties_set (GsAppQuery *query);
 GType gs_app_query_get_type (void);
 
 GsAppList *gs_app_list_new (void);
+GsAppList *gs_app_list_copy (GsAppList *list);
 void gs_app_list_add (GsAppList *list, GsApp *app);
+gboolean gs_app_list_remove (GsAppList *list, GsApp *app);
 GsApp *gs_app_list_index (GsAppList *list, guint index);
 guint gs_app_list_length (GsAppList *list);
 
@@ -242,6 +248,8 @@ void gs_app_set_kind (GsApp *app, AsComponentKind kind);
 void gs_app_set_scope (GsApp *app, AsComponentScope scope);
 void gs_app_set_bundle_kind (GsApp *app, AsBundleKind kind);
 void gs_app_set_state (GsApp *app, GsAppState state);
+GsAppState gs_app_get_state (GsApp *app);
+gboolean gs_app_has_quirk (GsApp *app, GsAppQuirk quirk);
 void gs_app_set_progress (GsApp *app, guint percentage);
 void gs_app_set_origin (GsApp *app, const gchar *origin);
 void gs_app_set_origin_ui (GsApp *app, const gchar *origin_ui);
